@@ -25,7 +25,7 @@ func main() {
 	store := sessions.NewCookieStore([]byte(os.Getenv("SESSION_KEY")))
 
 	opts := &oidcmiddleware.Options{
-		Issuer:       "https://accounts.google.com",
+		IssuerURL:    "https://accounts.google.com",
 		RedirectURL:  "http://localhost:8080/oauth2/callback",
 		ClientID:     os.Getenv("CLIENT_ID"),
 		ClientSecret: os.Getenv("CLIENT_SECRET"),
