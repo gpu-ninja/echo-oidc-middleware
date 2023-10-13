@@ -20,9 +20,11 @@ package oidcmiddleware
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -43,20 +45,63 @@ type Options struct {
 	ClientSecret string
 	// MaxAge is how long the users session should be valid for.
 	MaxAge *time.Duration
+	// TLSClientConfig is the TLS configuration to use when connecting to the issuer.
+	TLSClientConfig *tls.Config
+	// SkipIssuerValidation disables the validation of the issuer URL.
+	// This allows using private issuer URLs.
+	SkipIssuerValidation bool
 }
 
 // NewOIDCMiddleware returns an echo middleware that can be used to protect routes with OpenID Connect.
 func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, opts *Options) (echo.MiddlewareFunc, error) {
+	issuerURL, err := url.Parse(opts.Issuer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse issuer url: %w", err)
+	}
+
+	transport := http.DefaultTransport
+
+	if opts.TLSClientConfig != nil {
+		transport.(*http.Transport).TLSClientConfig = opts.TLSClientConfig
+	}
+
+	if opts.SkipIssuerValidation {
+		ctx = oidc.InsecureIssuerURLContext(ctx, opts.Issuer)
+
+		transport = &rewritingTransport{
+			transport: transport,
+			host:      issuerURL.Host,
+		}
+	}
+
+	ctx = oidc.ClientContext(ctx, &http.Client{
+		Transport: transport,
+	})
+
 	provider, err := oidc.NewProvider(ctx, opts.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get oidc provider: %w", err)
+	}
+
+	endpoint := provider.Endpoint()
+
+	if opts.SkipIssuerValidation {
+		endpoint.AuthURL, err = overrideHost(endpoint.AuthURL, issuerURL.Host)
+		if err != nil {
+			return nil, fmt.Errorf("failed to override host: %w", err)
+		}
+
+		endpoint.TokenURL, err = overrideHost(endpoint.TokenURL, issuerURL.Host)
+		if err != nil {
+			return nil, fmt.Errorf("failed to override host: %w", err)
+		}
 	}
 
 	oauth2Config := &oauth2.Config{
 		ClientID:     opts.ClientID,
 		ClientSecret: opts.ClientSecret,
 		RedirectURL:  opts.RedirectURL,
-		Endpoint:     provider.Endpoint(),
+		Endpoint:     endpoint,
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 	}
 
@@ -130,8 +175,8 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		}
 
 		var claims struct {
-			Email    string `json:"email"`
-			Verified bool   `json:"email_verified"`
+			Email         string `json:"email"`
+			EmailVerified bool   `json:"email_verified"`
 		}
 
 		if err := idToken.Claims(&claims); err != nil {
@@ -139,7 +184,7 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		}
 
 		// 4. Check that the users email has been verified.
-		if !claims.Verified {
+		if !claims.EmailVerified {
 			return echo.NewHTTPError(http.StatusForbidden, "email not verified")
 		}
 
@@ -204,4 +249,32 @@ func generateState() (string, error) {
 	}
 
 	return base64.StdEncoding.EncodeToString(stateBytes), nil
+}
+
+func overrideHost(rawURL string, host string) (string, error) {
+	if rawURL == "" {
+		return "", nil
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse url: %w", err)
+	}
+
+	u.Host = host
+
+	return u.String(), nil
+}
+
+// rewritingTransport is an http.RoundTripper that rewrites the host of all requests to a given host.
+// this allows using private issuer URLs.
+type rewritingTransport struct {
+	transport http.RoundTripper
+	host      string
+}
+
+func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Host = t.host
+
+	return t.transport.RoundTrip(req)
 }

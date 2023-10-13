@@ -40,7 +40,7 @@ import (
 )
 
 func TestOIDCMiddleware(t *testing.T) {
-	issuer, stopMockOIDCProvider, err := startMockOIDCProvider()
+	issuer, stopMockOIDCProvider, err := startMockOIDCProvider("")
 	require.NoError(t, err)
 	t.Cleanup(stopMockOIDCProvider)
 
@@ -154,7 +154,48 @@ func TestOIDCMiddleware(t *testing.T) {
 	})
 }
 
-func startMockOIDCProvider() (string, func(), error) {
+func TestOIDCMiddlewareWithPrivateURL(t *testing.T) {
+	issuer, stopMockOIDCProvider, err := startMockOIDCProvider("http://auth.local.koopt.sh")
+	require.NoError(t, err)
+	t.Cleanup(stopMockOIDCProvider)
+
+	ctx := context.Background()
+
+	store := &mockStore{}
+
+	e := echo.New()
+
+	maxAge := time.Hour
+	opts := &oidcmiddleware.Options{
+		Issuer:               issuer,
+		RedirectURL:          "http://localhost:8080/oauth2/callback",
+		ClientID:             "testClient",
+		ClientSecret:         "testSecret",
+		MaxAge:               &maxAge,
+		SkipIssuerValidation: true,
+	}
+
+	_, err = oidcmiddleware.NewOIDCMiddleware(ctx, e, store, opts)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth2/callback", nil)
+	rec := httptest.NewRecorder()
+
+	store.session = sessions.NewSession(store, opts.ClientID)
+	store.session.Values["state"] = "testState"
+	store.session.Values["original_url"] = "/myurl"
+
+	q := req.URL.Query()
+	q.Set("state", "testState")
+	req.URL.RawQuery = q.Encode()
+
+	e.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, "/myurl", rec.Header().Get("Location"))
+}
+
+func startMockOIDCProvider(staticIssuerURL string) (string, func(), error) {
 	type providerJSON struct {
 		Issuer      string   `json:"issuer"`
 		AuthURL     string   `json:"authorization_endpoint"`
@@ -176,7 +217,12 @@ func startMockOIDCProvider() (string, func(), error) {
 	e.HideBanner = true
 
 	e.GET("/.well-known/openid-configuration", func(c echo.Context) error {
-		issuer := "http://" + c.Request().Host
+		var issuer string
+		if staticIssuerURL != "" {
+			issuer = fmt.Sprintf("%s:%s", staticIssuerURL, c.Request().URL.Port())
+		} else {
+			issuer = "http://" + c.Request().Host
+		}
 
 		openidConfiguration := providerJSON{
 			Issuer:      issuer,
