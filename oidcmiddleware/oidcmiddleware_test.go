@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -52,7 +53,7 @@ func TestOIDCMiddleware(t *testing.T) {
 
 	maxAge := time.Hour
 	opts := &oidcmiddleware.Options{
-		Issuer:       issuer,
+		IssuerURL:    issuer,
 		RedirectURL:  "http://localhost:8080/oauth2/callback",
 		ClientID:     "testClient",
 		ClientSecret: "testSecret",
@@ -167,12 +168,12 @@ func TestOIDCMiddlewareWithPrivateURL(t *testing.T) {
 
 	maxAge := time.Hour
 	opts := &oidcmiddleware.Options{
-		Issuer:                  issuer,
-		RedirectURL:             "http://localhost:8080/oauth2/callback",
-		ClientID:                "testClient",
-		ClientSecret:            "testSecret",
-		MaxAge:                  &maxAge,
-		SkipIssuerURLValidation: true,
+		IssuerURL:         issuer,
+		RedirectURL:       "http://localhost:8080/oauth2/callback",
+		ClientID:          "testClient",
+		ClientSecret:      "testSecret",
+		MaxAge:            &maxAge,
+		DiscoverIssuerURL: true,
 	}
 
 	_, err = oidcmiddleware.NewOIDCMiddleware(ctx, e, store, opts)
@@ -219,7 +220,12 @@ func startMockOIDCProvider(staticIssuerURL string) (string, func(), error) {
 	e.GET("/.well-known/openid-configuration", func(c echo.Context) error {
 		var issuer string
 		if staticIssuerURL != "" {
-			issuer = fmt.Sprintf("%s:%s", staticIssuerURL, c.Request().URL.Port())
+			_, port, err := net.SplitHostPort(c.Request().Host)
+			if err != nil {
+				return err
+			}
+
+			issuer = fmt.Sprintf("%s:%s", staticIssuerURL, port)
 		} else {
 			issuer = "http://" + c.Request().Host
 		}
@@ -254,8 +260,20 @@ func startMockOIDCProvider(staticIssuerURL string) (string, func(), error) {
 	})
 
 	e.POST("/oauth2/token", func(c echo.Context) error {
+		var issuer string
+		if staticIssuerURL != "" {
+			_, port, err := net.SplitHostPort(c.Request().Host)
+			if err != nil {
+				return err
+			}
+
+			issuer = fmt.Sprintf("%s:%s", staticIssuerURL, port)
+		} else {
+			issuer = "http://" + c.Request().Host
+		}
+
 		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-			"iss":            "http://" + c.Request().Host,
+			"iss":            issuer,
 			"sub":            "1234567890",
 			"aud":            "testClient",
 			"email":          "demo@example.com",

@@ -22,9 +22,11 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -35,8 +37,8 @@ import (
 
 // Options allows configuring the OpenID Connect middleware.
 type Options struct {
-	// Issuer is the URL of the OpenID Connect issuer.
-	Issuer string
+	// IssuerURL is the URL of the OpenID Connect issuer.
+	IssuerURL string
 	// RedirectURL is the URL to redirect the user to after they've logged in.
 	RedirectURL string
 	// ClientID is the OAuth2 client ID.
@@ -47,61 +49,55 @@ type Options struct {
 	MaxAge *time.Duration
 	// TLSClientConfig is the TLS configuration to use when connecting to the issuer.
 	TLSClientConfig *tls.Config
-	// SkipIssuerURLValidation disables the validation of the issuer URL.
-	// This allows using private issuer URLs that are not accessible from the internet.
-	SkipIssuerURLValidation bool
+	// DiscoverIssuerURL is whether to discover the issuer public URL using the OpenID Connect discovery endpoint.
+	// This is required if connecting to the issuer on a private URL.
+	DiscoverIssuerURL bool
 }
 
 // NewOIDCMiddleware returns an echo middleware that can be used to protect routes with OpenID Connect.
 func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, opts *Options) (echo.MiddlewareFunc, error) {
-	issuerURL, err := url.Parse(opts.Issuer)
+	issuerURL, err := url.Parse(opts.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse issuer url: %w", err)
 	}
 
 	transport := http.DefaultTransport
-
 	if opts.TLSClientConfig != nil {
 		transport.(*http.Transport).TLSClientConfig = opts.TLSClientConfig
 	}
 
-	if opts.SkipIssuerURLValidation {
-		ctx = oidc.InsecureIssuerURLContext(ctx, opts.Issuer)
-
+	if opts.DiscoverIssuerURL {
 		transport = &rewritingTransport{
 			transport: transport,
 			host:      issuerURL.Host,
 		}
+
+		ctx = oidc.ClientContext(ctx, &http.Client{
+			Transport: transport,
+		})
+
+		publicIssuerURL, err := discoverIssuerURL(ctx, opts.IssuerURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover public issuer url: %w", err)
+		}
+
+		ctx = oidc.InsecureIssuerURLContext(ctx, publicIssuerURL)
+	} else {
+		ctx = oidc.ClientContext(ctx, &http.Client{
+			Transport: transport,
+		})
 	}
 
-	ctx = oidc.ClientContext(ctx, &http.Client{
-		Transport: transport,
-	})
-
-	provider, err := oidc.NewProvider(ctx, opts.Issuer)
+	provider, err := oidc.NewProvider(ctx, opts.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get oidc provider: %w", err)
-	}
-
-	endpoint := provider.Endpoint()
-
-	if opts.SkipIssuerURLValidation {
-		endpoint.AuthURL, err = overrideHost(endpoint.AuthURL, issuerURL.Host)
-		if err != nil {
-			return nil, fmt.Errorf("failed to override host: %w", err)
-		}
-
-		endpoint.TokenURL, err = overrideHost(endpoint.TokenURL, issuerURL.Host)
-		if err != nil {
-			return nil, fmt.Errorf("failed to override host: %w", err)
-		}
 	}
 
 	oauth2Config := &oauth2.Config{
 		ClientID:     opts.ClientID,
 		ClientSecret: opts.ClientSecret,
 		RedirectURL:  opts.RedirectURL,
-		Endpoint:     endpoint,
+		Endpoint:     provider.Endpoint(),
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 	}
 
@@ -157,8 +153,12 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 			return echo.NewHTTPError(http.StatusUnauthorized, "invalid state parameter")
 		}
 
+		ctx := oidc.ClientContext(c.Request().Context(), &http.Client{
+			Transport: transport,
+		})
+
 		// 2. Exchange the authorization code for an OAuth2 token.
-		oauth2Token, err := oauth2Config.Exchange(c.Request().Context(), c.QueryParam("code"))
+		oauth2Token, err := oauth2Config.Exchange(ctx, c.QueryParam("code"))
 		if err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "failed to exchange token")
 		}
@@ -169,7 +169,7 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 			return echo.NewHTTPError(http.StatusInternalServerError, "no id_token field in oauth2 token")
 		}
 
-		idToken, err := verifier.Verify(c.Request().Context(), rawIDToken)
+		idToken, err := verifier.Verify(ctx, rawIDToken)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusForbidden, "failed to verify ID Token")
 		}
@@ -251,21 +251,6 @@ func generateState() (string, error) {
 	return base64.StdEncoding.EncodeToString(stateBytes), nil
 }
 
-func overrideHost(rawURL string, host string) (string, error) {
-	if rawURL == "" {
-		return "", nil
-	}
-
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse url: %w", err)
-	}
-
-	u.Host = host
-
-	return u.String(), nil
-}
-
 // rewritingTransport is an http.RoundTripper that rewrites the host of all requests to a given host.
 // this allows using private issuer URLs.
 type rewritingTransport struct {
@@ -277,4 +262,46 @@ func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	req.URL.Host = t.host
 
 	return t.transport.RoundTrip(req)
+}
+
+func discoverIssuerURL(ctx context.Context, issuerURL string) (string, error) {
+	u, err := url.Parse(issuerURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse issuer url: %w", err)
+	}
+
+	u.Path = path.Join(u.Path, "/.well-known/openid-configuration")
+
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := getClient(ctx).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to get openid configuration: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to get openid configuration, unexpected status code: %d", resp.StatusCode)
+	}
+
+	var configJSON struct {
+		Issuer string `json:"issuer"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&configJSON); err != nil {
+		return "", fmt.Errorf("failed to unmarshal openid configuration: %w", err)
+	}
+
+	return configJSON.Issuer, nil
+}
+
+func getClient(ctx context.Context) *http.Client {
+	if c, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
+		return c
+	}
+
+	return http.DefaultClient
 }
