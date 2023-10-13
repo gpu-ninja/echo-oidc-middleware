@@ -69,7 +69,7 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 	if opts.DiscoverIssuerURL {
 		transport = &rewritingTransport{
 			transport: transport,
-			host:      issuerURL.Host,
+			target:    issuerURL,
 		}
 
 		ctx = oidc.ClientContext(ctx, &http.Client{
@@ -109,7 +109,9 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		// 1. Check if the user is already logged in.
 		session, err := store.Get(c.Request(), opts.ClientID)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get/create session")
+			e.Logger.Error("Failed to get/create session:", err)
+
+			return echo.ErrInternalServerError
 		}
 
 		// If the user is already logged in, redirect them to the homepage.
@@ -120,12 +122,16 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		// 2. Generate a random state parameter and store it in the users session.
 		state, err := generateState()
 		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to generate state")
+			e.Logger.Error("Failed to generate state:", err)
+
+			return echo.ErrInternalServerError
 		}
 
 		session.Values["state"] = state
 		if err := session.Save(c.Request(), c.Response()); err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to save session")
+			e.Logger.Error("Failed to save session:", err)
+
+			return echo.ErrInternalServerError
 		}
 
 		// 3. Redirect the user to the OAuth2 provider to login.
@@ -136,21 +142,29 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		// 1. Verify the random state parameter.
 		session, err := store.Get(c.Request(), opts.ClientID)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get session")
+			e.Logger.Error("Failed to get session:", err)
+
+			return echo.ErrInternalServerError
 		}
 
 		state, ok := session.Values["state"]
 		if !ok || state == "" {
-			return echo.NewHTTPError(http.StatusUnauthorized, "missing state parameter")
+			e.Logger.Error("Request is missing state parameter")
+
+			return echo.ErrUnauthorized
 		}
 
 		delete(session.Values, "state")
 		if err := session.Save(c.Request(), c.Response()); err != nil {
-			return echo.NewHTTPError(http.StatusUnauthorized, "failed to save session")
+			e.Logger.Error("Failed to save session:", err)
+
+			return echo.ErrInternalServerError
 		}
 
 		if c.QueryParam("state") != state.(string) {
-			return echo.NewHTTPError(http.StatusUnauthorized, "invalid state parameter")
+			e.Logger.Error("Invalid state parameter")
+
+			return echo.ErrUnauthorized
 		}
 
 		ctx := oidc.ClientContext(c.Request().Context(), &http.Client{
@@ -160,18 +174,24 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		// 2. Exchange the authorization code for an OAuth2 token.
 		oauth2Token, err := oauth2Config.Exchange(ctx, c.QueryParam("code"))
 		if err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, "failed to exchange token")
+			e.Logger.Error("Failed to exchange token:", err)
+
+			return echo.ErrUnauthorized
 		}
 
 		// 3. Extract, verify, and decode the ID token.
 		rawIDToken, ok := oauth2Token.Extra("id_token").(string)
 		if !ok {
-			return echo.NewHTTPError(http.StatusInternalServerError, "no id_token field in oauth2 token")
+			e.Logger.Error("No \"id_token\" field in the oauth2 token")
+
+			return echo.ErrUnauthorized
 		}
 
 		idToken, err := verifier.Verify(ctx, rawIDToken)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusForbidden, "failed to verify ID Token")
+			e.Logger.Error("Failed to verify id token:", err)
+
+			return echo.ErrUnauthorized
 		}
 
 		var claims struct {
@@ -180,12 +200,16 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		}
 
 		if err := idToken.Claims(&claims); err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to extract claims from ID Token")
+			e.Logger.Error("Failed to extract claims from id token:", err)
+
+			return echo.ErrInternalServerError
 		}
 
 		// 4. Check that the users email has been verified.
 		if !claims.EmailVerified {
-			return echo.NewHTTPError(http.StatusForbidden, "email not verified")
+			e.Logger.Warn("Email is not verified")
+
+			return echo.NewHTTPError(http.StatusForbidden, "email is not verified")
 		}
 
 		// 5. Store the verified email address in the users session.
@@ -207,7 +231,9 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		delete(session.Values, "original_url")
 
 		if err := session.Save(c.Request(), c.Response()); err != nil {
-			return echo.NewHTTPError(http.StatusUnauthorized, "failed to save session")
+			e.Logger.Error("Failed to save session:", err)
+
+			return echo.ErrInternalServerError
 		}
 
 		return c.Redirect(http.StatusFound, originalURL)
@@ -218,7 +244,9 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 			// 1. Check if the user is logged in.
 			session, err := store.Get(c.Request(), opts.ClientID)
 			if err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "failed to get session")
+				e.Logger.Error("Failed to get session:", err)
+
+				return echo.ErrInternalServerError
 			}
 
 			email, ok := session.Values["email"]
@@ -226,7 +254,9 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 				// 2. Store the original URL in the session so we can redirect the user back to it after they've logged in.
 				session.Values["original_url"] = c.Request().URL.String()
 				if err := session.Save(c.Request(), c.Response()); err != nil {
-					return echo.NewHTTPError(http.StatusInternalServerError, "failed to save session")
+					e.Logger.Error("Failed to save session:", err)
+
+					return echo.ErrInternalServerError
 				}
 
 				// 3. Begin the OAuth2 login flow.
@@ -240,28 +270,6 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 	}
 
 	return isAuthenticated, nil
-}
-
-func generateState() (string, error) {
-	var stateBytes = make([]byte, 32)
-	if _, err := rand.Read(stateBytes); err != nil {
-		return "", err
-	}
-
-	return base64.StdEncoding.EncodeToString(stateBytes), nil
-}
-
-// rewritingTransport is an http.RoundTripper that rewrites the host of all requests to a given host.
-// this allows using private issuer URLs.
-type rewritingTransport struct {
-	transport http.RoundTripper
-	host      string
-}
-
-func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.URL.Host = t.host
-
-	return t.transport.RoundTrip(req)
 }
 
 func discoverIssuerURL(ctx context.Context, issuerURL string) (string, error) {
@@ -304,4 +312,27 @@ func getClient(ctx context.Context) *http.Client {
 	}
 
 	return http.DefaultClient
+}
+
+func generateState() (string, error) {
+	var stateBytes = make([]byte, 32)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(stateBytes), nil
+}
+
+// rewritingTransport is an http.RoundTripper that rewrites the host of all requests to a given host.
+// this allows using private issuer URLs.
+type rewritingTransport struct {
+	transport http.RoundTripper
+	target    *url.URL
+}
+
+func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = t.target.Scheme
+	req.URL.Host = t.target.Host
+
+	return t.transport.RoundTrip(req)
 }

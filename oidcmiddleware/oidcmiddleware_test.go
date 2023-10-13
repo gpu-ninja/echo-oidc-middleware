@@ -156,7 +156,7 @@ func TestOIDCMiddleware(t *testing.T) {
 }
 
 func TestOIDCMiddlewareWithPrivateURL(t *testing.T) {
-	issuer, stopMockOIDCProvider, err := startMockOIDCProvider("http://auth.local.koopt.sh")
+	issuer, stopMockOIDCProvider, err := startMockOIDCProvider("https://auth.example.com")
 	require.NoError(t, err)
 	t.Cleanup(stopMockOIDCProvider)
 
