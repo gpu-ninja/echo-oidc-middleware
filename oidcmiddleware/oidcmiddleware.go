@@ -47,9 +47,9 @@ type Options struct {
 	MaxAge *time.Duration
 	// TLSClientConfig is the TLS configuration to use when connecting to the issuer.
 	TLSClientConfig *tls.Config
-	// SkipIssuerValidation disables the validation of the issuer URL.
-	// This allows using private issuer URLs.
-	SkipIssuerValidation bool
+	// SkipIssuerURLValidation disables the validation of the issuer URL.
+	// This allows using private issuer URLs that are not accessible from the internet.
+	SkipIssuerURLValidation bool
 }
 
 // NewOIDCMiddleware returns an echo middleware that can be used to protect routes with OpenID Connect.
@@ -65,7 +65,7 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		transport.(*http.Transport).TLSClientConfig = opts.TLSClientConfig
 	}
 
-	if opts.SkipIssuerValidation {
+	if opts.SkipIssuerURLValidation {
 		ctx = oidc.InsecureIssuerURLContext(ctx, opts.Issuer)
 
 		transport = &rewritingTransport{
@@ -85,7 +85,7 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 
 	endpoint := provider.Endpoint()
 
-	if opts.SkipIssuerValidation {
+	if opts.SkipIssuerURLValidation {
 		endpoint.AuthURL, err = overrideHost(endpoint.AuthURL, issuerURL.Host)
 		if err != nil {
 			return nil, fmt.Errorf("failed to override host: %w", err)
