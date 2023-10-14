@@ -54,8 +54,8 @@ type Options struct {
 	DiscoverIssuerURL bool
 }
 
-// NewOIDCMiddleware returns an echo middleware that can be used to protect routes with OpenID Connect.
-func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, opts *Options) (echo.MiddlewareFunc, error) {
+// NewAuthMiddleware returns an echo middleware that can be used to protect routes with OpenID Connect.
+func NewAuthMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, opts *Options) (echo.MiddlewareFunc, error) {
 	issuerURL, err := url.Parse(opts.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse issuer url: %w", err)
@@ -239,7 +239,7 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		return c.Redirect(http.StatusFound, originalURL)
 	})
 
-	isAuthenticated := func(next echo.HandlerFunc) echo.HandlerFunc {
+	authMiddleware := func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			// 1. Check if the user is logged in.
 			session, err := store.Get(c.Request(), opts.ClientID)
@@ -269,7 +269,7 @@ func NewOIDCMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		}
 	}
 
-	return isAuthenticated, nil
+	return authMiddleware, nil
 }
 
 func discoverIssuerURL(ctx context.Context, issuerURL string) (string, error) {

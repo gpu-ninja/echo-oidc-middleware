@@ -1,8 +1,6 @@
 # echo-oidc-middleware
 
-A basic OpenID Connect authentication middlware for LabStack Echo. 
-
-I wrote this because I needed to add OIDC authentication to an app I was working on and I couldn't find any good / complete examples of how to do it. I hope this helps someone else.
+A basic OpenID Connect authentication middleware for LabStack Echo.
 
 ## Usage
 
@@ -36,14 +34,14 @@ func main() {
 	e.Use(middleware.Recover())
 
 	ctx := context.Background()
-	isAuthenticated, err := oidcmiddleware.NewOIDCMiddleware(ctx, e, store, opts)
+	authMiddleware, err := oidcmiddleware.NewAuthMiddleware(ctx, e, store, opts)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	e.GET("/", func(c echo.Context) error {
 		return c.String(http.StatusOK, "Hello, World!")
-	}, isAuthenticated)
+	}, authMiddleware)
 
 	// In production you should use TLS.
 	e.Logger.Fatal(e.Start(":8080"))

@@ -60,7 +60,7 @@ func TestOIDCMiddleware(t *testing.T) {
 		MaxAge:       &maxAge,
 	}
 
-	isAuthenticated, err := oidcmiddleware.NewOIDCMiddleware(ctx, e, store, opts)
+	authMiddleware, err := oidcmiddleware.NewAuthMiddleware(ctx, e, store, opts)
 	require.NoError(t, err)
 
 	t.Run("Middleware Adds Email to Context When Logged In", func(t *testing.T) {
@@ -72,7 +72,7 @@ func TestOIDCMiddleware(t *testing.T) {
 
 		c := e.NewContext(req, rec)
 
-		err := isAuthenticated(func(c echo.Context) error {
+		err := authMiddleware(func(c echo.Context) error {
 			return c.String(http.StatusOK, c.Get("email").(string))
 		})(c)
 		require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestOIDCMiddleware(t *testing.T) {
 
 		c := e.NewContext(req, rec)
 
-		err := isAuthenticated(func(c echo.Context) error {
+		err := authMiddleware(func(c echo.Context) error {
 			return c.String(http.StatusOK, "logged in")
 		})(c)
 		require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestOIDCMiddlewareWithPrivateURL(t *testing.T) {
 		DiscoverIssuerURL: true,
 	}
 
-	_, err = oidcmiddleware.NewOIDCMiddleware(ctx, e, store, opts)
+	_, err = oidcmiddleware.NewAuthMiddleware(ctx, e, store, opts)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth2/callback", nil)
