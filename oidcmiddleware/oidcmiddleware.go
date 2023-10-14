@@ -49,9 +49,9 @@ type Options struct {
 	MaxAge *time.Duration
 	// TLSClientConfig is the TLS configuration to use when connecting to the issuer.
 	TLSClientConfig *tls.Config
-	// DiscoverIssuerURL is whether to discover the issuer public URL using the OpenID Connect discovery endpoint.
+	// DiscoverIssuer is whether to discover the issuer public URL using the OpenID Connect discovery endpoint.
 	// This is required if connecting to the issuer on a private URL.
-	DiscoverIssuerURL bool
+	DiscoverIssuer bool
 }
 
 // NewAuthMiddleware returns an echo middleware that can be used to protect routes with OpenID Connect.
@@ -66,7 +66,7 @@ func NewAuthMiddleware(ctx context.Context, e *echo.Echo, store sessions.Store, 
 		transport.(*http.Transport).TLSClientConfig = opts.TLSClientConfig
 	}
 
-	if opts.DiscoverIssuerURL {
+	if opts.DiscoverIssuer {
 		transport = &rewritingTransport{
 			transport: transport,
 			target:    issuerURL,

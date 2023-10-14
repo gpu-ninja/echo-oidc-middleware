@@ -168,12 +168,12 @@ func TestOIDCMiddlewareWithPrivateURL(t *testing.T) {
 
 	maxAge := time.Hour
 	opts := &oidcmiddleware.Options{
-		IssuerURL:         issuer,
-		RedirectURL:       "http://localhost:8080/oauth2/callback",
-		ClientID:          "testClient",
-		ClientSecret:      "testSecret",
-		MaxAge:            &maxAge,
-		DiscoverIssuerURL: true,
+		IssuerURL:      issuer,
+		RedirectURL:    "http://localhost:8080/oauth2/callback",
+		ClientID:       "testClient",
+		ClientSecret:   "testSecret",
+		MaxAge:         &maxAge,
+		DiscoverIssuer: true,
 	}
 
 	_, err = oidcmiddleware.NewAuthMiddleware(ctx, e, store, opts)
